@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Set up an isolated Pi profile (~/.pi/test) for testing this checkout.
+
+set -euo pipefail
+
+repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+src="$HOME/.pi/agent"
+dst=$(realpath -m -- "${PI_CODING_AGENT_DIR:-$HOME/.pi/test}")
+
+[[ "$dst" != "$(realpath -m -- "$src")" ]] || {
+  echo "Refusing to use the standard profile: $src" >&2
+  exit 1
+}
+
+mkdir -p "$dst"
+
+for f in auth.json models.json keybindings.json AGENTS.md; do
+  [[ -e "$src/$f" ]] && ln -sfn "$src/$f" "$dst/$f"
+done
+
+{ cat "$src/settings.json" 2>/dev/null || echo '{}'; } |
+  jq --arg pkg "$repo" 'del(.packages) | .packages = [$pkg]' >"$dst/settings.json"
+
+printf 'Run: PI_CODING_AGENT_DIR=%s pi\n' "$dst"

@@ -23,3 +23,5 @@ or
 ```
 [[ a == b ]] && something
 ```
+
+avoid starting lines with '{'

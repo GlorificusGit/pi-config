@@ -4,13 +4,8 @@
 set -euo pipefail
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-src="$HOME/.pi/agent"
-dst=$(realpath -m -- "${PI_CODING_AGENT_DIR:-$HOME/.pi/test}")
-
-[[ "$dst" != "$(realpath -m -- "$src")" ]] || {
-  echo "Refusing to use the standard profile: $src" >&2
-  exit 1
-}
+src=~/.pi/agent
+dst=~/.pi/test
 
 mkdir -p "$dst"
 
@@ -18,7 +13,7 @@ for f in auth.json models.json keybindings.json AGENTS.md; do
   [[ -e "$src/$f" ]] && ln -sfn "$src/$f" "$dst/$f"
 done
 
-{ cat "$src/settings.json" 2>/dev/null || echo '{}'; } |
-  jq --arg pkg "$repo" 'del(.packages) | .packages = [$pkg]' >"$dst/settings.json"
+cfg=$(cat "$src/settings.json" 2>/dev/null || echo '{}')
+jq --arg pkg "$repo" 'del(.packages) | .packages = [$pkg]' <<<"$cfg" >"$dst/settings.json"
 
-printf 'Run: PI_CODING_AGENT_DIR=%s pi\n' "$dst"
+echo "Run: PI_CODING_AGENT_DIR=$dst pi"

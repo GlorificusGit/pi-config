@@ -8,3 +8,10 @@ Pi extensions, skills, and prompt templates.
 pi install git:github.com/GlorificusGit/pi-config
 ```
 
+## Local testing
+
+```bash
+./scripts/setup-test
+```
+
+Creates an isolated profile at `~/.pi/test` to test local changes

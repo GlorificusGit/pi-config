@@ -9,7 +9,8 @@
  *     opens the autocomplete dropdown (filtered by name/description).
  *   - Tab accepts the highlighted item, Enter accepts and submits.
  *   - Prompt-template tokens are expanded inline on submission: the frontmatter
- *     is stripped and missing arguments fall back to their defaults.
+ *     is stripped and missing arguments fall back to their defaults. Templates
+ *     without placeholders also expand when leading, keeping trailing text.
  *   - Skill tokens (`/skill:name`) are left literal. Pi only force-expands
  *     skills at the start of a message, so inline tokens rely on the model
  *     loading the skill from pi's <available_skills> advertisement. Use a
@@ -330,6 +331,16 @@ function substituteArgs(content: string, args: string[]): string {
 	);
 }
 
+interface Template {
+	/** Body with argument placeholders substituted. */
+	body: string;
+	/** Whether the body has placeholders, i.e. can consume arguments. */
+	hasSubstitutions: boolean;
+}
+
+/** Non-global copy of pi's placeholder pattern, so `.test()` stays stateless. */
+const SUBST_RE = /\$\{(\d+|ARGUMENTS|@):-[^}]*\}|\$\{@:\d+(?::\d+)?\}|\$(ARGUMENTS|@|\d+)/;
+
 const templateCache = new Map<string, string | undefined>();
 
 function loadTemplateBody(path: string): string | undefined {
@@ -352,15 +363,15 @@ function loadTemplateBody(path: string): string | undefined {
  * token is left untouched), so `${N:-default}` placeholders resolve to their
  * defaults.
  */
-function loadTemplateBodies(pi: ExtensionAPI): Map<string, string> {
-	const bodies = new Map<string, string>();
+function loadTemplateBodies(pi: ExtensionAPI): Map<string, Template> {
+	const bodies = new Map<string, Template>();
 	for (const command of getIndexedCommands(pi)) {
 		if (command.kind !== "prompt" || !command.path) {
 			continue;
 		}
 		const body = loadTemplateBody(command.path);
 		if (body !== undefined) {
-			bodies.set(command.displayName, substituteArgs(body, []));
+			bodies.set(command.displayName, { body: substituteArgs(body, []), hasSubstitutions: SUBST_RE.test(body) });
 		}
 	}
 	return bodies;
@@ -374,38 +385,40 @@ function loadTemplateBodies(pi: ExtensionAPI): Map<string, string> {
 const MID_TEMPLATE_TOKEN_RE = new RegExp(`(^|[\\s\\t([{<\`"'])\\/([^\\s)\\]}>"'\`,;!?]+)`, "gu");
 
 /**
- * Expand mid-prompt `/template` tokens inline. The leading command of the
- * message is left for pi's built-in expansion, and skill tokens are left
- * literal for lazy loading.
+ * Expand mid-prompt `/template` tokens inline. A leading template without
+ * placeholders is expanded too, since it cannot consume arguments; only a
+ * leading template that takes arguments is left for pi's built-in expansion.
+ * Skill tokens are left literal for lazy loading.
  *
  * Expansion is textual and applies everywhere a token appears, including
  * quotes and inline or fenced code spans. There is no escape syntax yet.
  */
-function expandMidPromptTemplates(text: string, bodies: Map<string, string>): string {
+function expandMidPromptTemplates(text: string, bodies: Map<string, Template>): string {
 	if (bodies.size === 0 || !text.includes("/")) {
 		return text;
 	}
 	return text.replace(MID_TEMPLATE_TOKEN_RE, (match, boundary: string, token: string, offset: number) => {
-		// Leading command at the very start of the message: built-in handles it.
-		if (offset === 0 && boundary === "") {
-			return match;
-		}
-		let body = bodies.get(token);
+		let template = bodies.get(token);
 		let trailing = "";
-		if (body === undefined) {
+		if (template === undefined) {
 			// Allow sentence punctuation directly after a command, e.g. `/review.`.
 			const trimmed = token.replace(/[.:]+$/, "");
 			if (trimmed !== token) {
-				body = bodies.get(trimmed);
-				if (body !== undefined) {
+				template = bodies.get(trimmed);
+				if (template !== undefined) {
 					trailing = token.slice(trimmed.length);
 				}
 			}
 		}
-		if (body === undefined) {
+		if (template === undefined) {
 			return match;
 		}
-		return `${boundary}${body}${trailing}`;
+		// A leading token that takes arguments belongs to pi's built-in expansion;
+		// one without placeholders cannot, so expand it and keep the rest verbatim.
+		if (offset === 0 && boundary === "" && template.hasSubstitutions) {
+			return match;
+		}
+		return `${boundary}${template.body}${trailing}`;
 	});
 }
 

@@ -11,6 +11,7 @@ When coding, follow the following principles:
 - don't limit yourself to 80 chars width, use extra width to reduce lines
 - look for 'wins' such that rewriting the code in a simpler way actually increases readibility and understanding
 - after coding, ask yourself if you can rewrite your code more DRY/YAGNI, or more concisely.
+- these days AI is finding vulnerabilities everywhere. 3rd party code is a liability. be careful using 3rd party libraries and packages. stick to highly reputable 3rd party code. consider if you are better off writing the code you need from scratch. when in doubt, ask.
 
 Respect these boundaries:
 - you don't need to name every variable a single char (unless it actually makes sense sometimes)

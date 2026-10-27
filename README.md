@@ -14,8 +14,6 @@ pi install git:github.com/GlorificusGit/pi-config
 pi update --extensions
 ```
 
-Updates installed packages to the latest commit.
-
 ## Local testing
 
 ```bash

@@ -2,7 +2,7 @@
   "name": "pi-config",
   "version": "0.1.0",
   "private": true,
-  "description": "Pi extensions, skills, and prompt templates",
+  "description": "Personal Pi extensions",
   "license": "MIT",
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",

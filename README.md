@@ -1,6 +1,6 @@
 # pi-config
 
-Pi extensions, skills, and prompt templates.
+Personal Pi extensions.
 
 ## Install
 

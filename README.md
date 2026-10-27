@@ -8,6 +8,14 @@ Pi extensions, skills, and prompt templates.
 pi install git:github.com/GlorificusGit/pi-config
 ```
 
+## Update
+
+```bash
+pi update --extensions
+```
+
+Updates installed packages to the latest commit.
+
 ## Local testing
 
 ```bash

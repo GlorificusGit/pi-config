@@ -18,6 +18,7 @@ pi update --extensions
 
 ```bash
 ./scripts/setup-test
+PI_CODING_AGENT_DIR=~/.pi/test pi
 ```
 
 Creates an isolated profile at `~/.pi/test` to test local changes

@@ -7,7 +7,7 @@
  *
  *   - Typing a mid-prompt token such as `hi /skill:ask` or `hi /review`
  *     opens the autocomplete dropdown (filtered by name/description).
- *   - Tab accepts the highlighted item, Enter accepts and submits.
+ *   - Tab or Enter accepts the highlighted item without submitting.
  *   - Prompt-template tokens are expanded inline on submission: the frontmatter
  *     is stripped and missing arguments fall back to their defaults. Templates
  *     without placeholders also expand when leading, keeping trailing text.
@@ -120,7 +120,6 @@ const NAME_CHAR_RE = new RegExp(`[${NAME_CHARS}]`, "u");
 const MID_TOKEN_RE = new RegExp(`(?:^|[\\s\\t([{<\`"'])\\/([${NAME_CHARS}]*)$`, "u");
 
 interface MidPromptToken {
-	token: string;
 	query: string;
 }
 
@@ -136,8 +135,7 @@ function extractMidPromptToken(line: string, cursorCol: number, cursorLine: numb
 		return null;
 	}
 	const query = match[1] ?? "";
-	const token = `/${query}`;
-	const tokenStart = textBeforeCursor.length - token.length;
+	const tokenStart = textBeforeCursor.length - query.length - 1;
 	// A token at the very start of the first line is a normal leading slash
 	// command; delegate to pi. A token at the start of a later line is still
 	// mid-message and is ours.
@@ -150,7 +148,7 @@ function extractMidPromptToken(line: string, cursorCol: number, cursorLine: numb
 	if (nextChar === "/" || nextChar === "\\" || NAME_CHAR_RE.test(nextChar)) {
 		return null;
 	}
-	return { token, query };
+	return { query };
 }
 
 // ---------------------------------------------------------------------------
@@ -178,7 +176,7 @@ function buildSuggestions(pi: ExtensionAPI, query: string): AutocompleteItem[] {
 	);
 
 	return [...promptMatches, ...bareSkillMatches, ...fullSkillMatches].slice(0, MAX_SUGGESTIONS).map((command) => ({
-		value: `/${command.displayName}`,
+		value: command.displayName,
 		label: command.displayName,
 		...(command.description ? { description: command.description } : {}),
 	}));
@@ -187,7 +185,8 @@ function buildSuggestions(pi: ExtensionAPI, query: string): AutocompleteItem[] {
 function createMidPromptProvider(current: AutocompleteProvider, pi: ExtensionAPI): AutocompleteProvider {
 	// Prefix of the suggestion set we produced most recently. Used so that
 	// applyCompletion can tell our mid-prompt tokens apart from the built-in
-	// provider's leading-slash and file-path prefixes.
+	// provider's leading-slash and file-path prefixes. Our prefix omits the
+	// slash so the editor's Enter accepts without submitting.
 	let ownPrefix: string | undefined;
 
 	return {
@@ -210,8 +209,8 @@ function createMidPromptProvider(current: AutocompleteProvider, pi: ExtensionAPI
 				return current.getSuggestions(lines, cursorLine, cursorCol, options);
 			}
 
-			ownPrefix = extracted.token;
-			return { items, prefix: extracted.token };
+			ownPrefix = extracted.query;
+			return { items, prefix: extracted.query };
 		},
 
 		applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
@@ -219,9 +218,9 @@ function createMidPromptProvider(current: AutocompleteProvider, pi: ExtensionAPI
 				return current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
 			}
 			const currentLine = lines[cursorLine] ?? "";
-			const before = currentLine.slice(0, cursorCol - prefix.length);
+			const before = currentLine.slice(0, cursorCol - prefix.length - 1);
 			const after = currentLine.slice(cursorCol);
-			const insertion = item.value.endsWith(" ") ? item.value : `${item.value} `;
+			const insertion = `/${item.value} `;
 			const newLines = [...lines];
 			newLines[cursorLine] = before + insertion + after;
 			return {

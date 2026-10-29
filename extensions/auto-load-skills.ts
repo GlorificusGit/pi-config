@@ -78,7 +78,9 @@ async function prepare(pi: ExtensionAPI, ctx: ExtensionContext): Promise<string 
   const blocks: string[] = [];
   for (const rule of RULES) {
     const result = await pi.exec("bash", ["-c", rule.when], { cwd: ctx.cwd, timeout: 5000 });
-    if (result.code !== 0) {
+    // pi.exec never rejects; spawn failures resolve with code 1. A timed-out
+    // check is killed by a signal, which pi.exec reports as code 0.
+    if (result.killed || result.code !== 0) {
       continue;
     }
     try {
@@ -99,6 +101,7 @@ export default function (pi: ExtensionAPI): void {
   pi.on("before_agent_start", async (event, ctx) => {
     const blocks = await prepare(pi, ctx);
     if (blocks) {
+      // systemPromptOptions is mutable by design; no return value is needed.
       event.systemPromptOptions.sections[SECTION] = blocks;
     }
   });

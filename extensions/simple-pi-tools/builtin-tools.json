@@ -8,8 +8,8 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "query": { "type": "string", "description": "Search query, short and specific" },
-          "count": { "type": "integer", "description": "Number of results, 1-20" }
+          "query": { "type": "string", "description": "Search query, short and specific, max 128 characters" },
+          "count": { "type": "integer", "description": "Number of results, 1-10" }
         },
         "required": ["query"]
       },

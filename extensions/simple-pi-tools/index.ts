@@ -1,7 +1,10 @@
 // simple-pi-tools
 //
-// Registers one pi tool per entry in <agent dir>/tools.json
-// (~/.pi/agent by default). See example.json beside this file.
+// Registers one pi tool per entry in builtin-tools.json beside this file,
+// then in the user's <agent dir>/tools.json (~/.pi/agent by default).
+// A user entry with the same name as a builtin one replaces it; if that entry is invalid, neither registers.
+// If tools.json exists but cannot be loaded, no builtins register.
+// A tool whose headers use an unset env variable is skipped (with a warning for user tools).
 // Each tool makes exactly ONE HTTPS request and returns the response text.
 // Anything needing more logic belongs in its own extension.
 //
@@ -9,11 +12,13 @@
 import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 // ---------------------------------------------------------------- constants
 
-const CONFIG_PATH = join(getAgentDir(), "tools.json");
+const BUILTIN_PATH = join(dirname(fileURLToPath(import.meta.url)), "builtin-tools.json");
+const USER_PATH = join(getAgentDir(), "tools.json");
 
 const TOOL_NAME_RE = /^[a-z][a-z0-9_]{0,63}$/;
 const ENV_NAME_RE = /^[A-Z_][A-Z0-9_]*$/;
@@ -317,29 +322,60 @@ async function runTool(spec: ToolSpec, rawArgs: unknown, signal?: AbortSignal) {
 
 // ---------------------------------------------------------------- extension
 
+/** Reads {"tools": [...]} from path. Returns [] for a missing optional file, undefined when loading failed. */
+function loadEntries(path: string, required: boolean, problems: string[]): unknown[] | undefined {
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    if (!isPlainObject(parsed) || !Array.isArray(parsed.tools)) throw new Error('top level must be {"tools": [...]}');
+    return parsed.tools;
+  } catch (err: any) {
+    if (!required && err?.code === "ENOENT") return [];
+    problems.push(`could not load ${path}: ${err?.message ?? err}`);
+    return undefined;
+  }
+}
+
+const nameOf = (raw: unknown) => (isPlainObject(raw) && typeof raw.name === "string" ? raw.name : undefined);
+
+/** Parses entries into specs; invalid ones are reported and dropped. */
+function parseAll(entries: unknown[], problems: string[]): ToolSpec[] {
+  const seen = new Set<string>();
+  const specs: ToolSpec[] = [];
+  entries.forEach((raw, i) => {
+    const name = nameOf(raw);
+    try {
+      const spec = parseEntry(raw, seen);
+      seen.add(spec.name);
+      specs.push(spec);
+    } catch (err: any) {
+      problems.push(`tool ${name !== undefined ? `"${name}"` : `#${i}`} skipped: ${err?.message ?? err}`);
+    }
+  });
+  return specs;
+}
+
+/** Env variables a tool's headers reference but the environment lacks. */
+const unsetVars = (spec: ToolSpec) =>
+  [...new Set(Object.values(spec.headers).flatMap((v) => [...v.matchAll(PLACEHOLDER_RE)].map((m) => m[1])))].filter(
+    (name) => !process.env[name],
+  );
+
 export default function (pi: ExtensionAPI) {
   const problems: string[] = [];
-  let entries: unknown[] = [];
+  const userEntries = loadEntries(USER_PATH, false, problems);
+  const user = parseAll(userEntries ?? [], problems);
+  // Never fall back to a builtin the user may have overridden: not for invalid entries, nor an unreadable file.
+  const overridden = new Set((userEntries ?? []).map(nameOf));
+  const builtin = userEntries
+    ? parseAll(loadEntries(BUILTIN_PATH, true, problems) ?? [], problems).filter((spec) => !overridden.has(spec.name))
+    : [];
 
-  try {
-    const parsed = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
-    if (!isPlainObject(parsed) || !Array.isArray(parsed.tools)) throw new Error('top level must be {"tools": [...]}');
-    entries = parsed.tools;
-  } catch (err: any) {
-    if (err?.code !== "ENOENT") problems.push(`could not load ${CONFIG_PATH}: ${err?.message ?? err}`);
-  }
-
-  const seen = new Set<string>();
-  entries.forEach((raw, i) => {
-    const label = isPlainObject(raw) && typeof raw.name === "string" ? `"${raw.name}"` : `#${i}`;
-    let spec: ToolSpec;
-    try {
-      spec = parseEntry(raw, seen);
-    } catch (err: any) {
-      problems.push(`tool ${label} skipped: ${err?.message ?? err}`);
-      return;
+  for (const spec of [...builtin, ...user]) {
+    const unset = unsetVars(spec);
+    if (unset.length > 0) {
+      if (user.includes(spec)) problems.push(`tool "${spec.name}" skipped: ${unset.join(", ")} not set`);
+      continue;
     }
-    seen.add(spec.name);
     pi.registerTool({
       name: spec.name,
       label: spec.label,
@@ -349,7 +385,7 @@ export default function (pi: ExtensionAPI) {
         return runTool(spec, params, signal);
       },
     });
-  });
+  }
 
   if (problems.length > 0) {
     pi.on("session_start", async (_event, ctx) => {

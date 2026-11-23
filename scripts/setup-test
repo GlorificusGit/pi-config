@@ -14,6 +14,8 @@ for f in auth.json models.json keybindings.json AGENTS.md tools.json; do
 done
 
 cfg=$(cat "$src/settings.json" 2>/dev/null || echo '{}')
-jq --arg pkg "$repo" 'del(.packages) | .packages = [$pkg]' <<<"$cfg" >"$dst/settings.json"
+# Generate before writing, so a jq failure leaves the old settings intact; -s copes with an empty file
+settings=$(jq -s --arg pkg "$repo" '.[0] // {} | del(.packages) | .packages = [$pkg]' <<<"$cfg")
+echo "$settings" >"$dst/settings.json"
 
 echo "Run: PI_CODING_AGENT_DIR=$dst pi"

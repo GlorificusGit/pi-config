@@ -60,11 +60,11 @@ function loadSkill(pi: ExtensionAPI, name: string): string {
     throw new Error(`auto-load-skills: skill "${name}" is not available; make sure Pi discovers a skill with that name.`);
   }
 
+  // Not sourceInfo.baseDir: for package skills that is the package root, not the skill dir.
   const path = command.sourceInfo.path;
-  const baseDir = command.sourceInfo.baseDir ?? dirname(path);
   try {
     const body = stripFrontmatter(readFileSync(path, "utf8")).trim();
-    return `<skill name="${name}" location="${path}">\nReferences are relative to ${baseDir}.\n\n${body}\n</skill>`;
+    return `<skill name="${name}" location="${path}">\nReferences are relative to ${dirname(path)}.\n\n${body}\n</skill>`;
   } catch (err) {
     throw new Error(`auto-load-skills: cannot read skill file ${path}: ${errorMessage(err)}`);
   }

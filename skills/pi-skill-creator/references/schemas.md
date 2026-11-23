@@ -8,7 +8,7 @@ This document defines the file formats used by skill-creator.
 
 Each test is a folder under `evals/` in the skill directory, in the layout `claude plugin eval` reads (the tree is in SKILL.md, under Test Cases). The `claude-plugin-eval` runner reads the same layout to run them against pi. Always write new tests this way.
 
-**Case name**: the folder name. Lowercase letters, digits and hyphens, starting with a letter; a few words on what the test checks. Don't use `results`, `mocks` or `node_modules` (the CLI keeps those names for itself), `files` (older tests keep their input files in `evals/files/`), or `true`, `false` or `null` (they don't read as text in `case.yaml`).
+**Case name**: the folder name. Lowercase letters, digits and hyphens, starting with a letter; a few words on what the test checks. Don't use `results`, `mocks` or `node_modules` (the CLI keeps those names for itself), `files` (older tests keep their input files in `evals/files/`), `runs`, `outputs`, `skill` or `inputs` (the pi runner's reports read them as layout), or `true`, `false` or `null` (they don't read as text in `case.yaml`).
 
 **prompt.md**: a settings block, copied as is, then the prompt exactly as the user would type it.
 

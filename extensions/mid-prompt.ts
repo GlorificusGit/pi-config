@@ -109,7 +109,7 @@ function getIndexedCommands(pi: ExtensionAPI): IndexedCommand[] {
 // ---------------------------------------------------------------------------
 
 /** Characters a command name may contain (skill names, template file names). */
-const NAME_CHARS = "A-Za-z0-9_.:-";
+const NAME_CHARS = "\\p{L}\\p{M}\\p{N}_.:-";
 const NAME_CHAR_RE = new RegExp(`[${NAME_CHARS}]`, "u");
 
 /**

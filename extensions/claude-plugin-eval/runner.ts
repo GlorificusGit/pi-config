@@ -12,7 +12,7 @@
  * Flags: --case <glob>, --tag <tag> (repeat or comma list), --runs <n> (default case.runs ?? 3),
  * -j/--concurrency <n> (default 1), --model, --judge-model (default: pi's default model),
  * --allow-tools <list> (grants Bash, Write, Edit), --scaffold, --threshold <0..1> (default 1),
- * --json [path], --output-dir <dir> (default <skill>/evals/results/<timestamp>).
+ * --json [path], --output-dir <dir> (new or empty; default <skill>/evals/results/<timestamp>).
  *
  * How a run works:
  * - Every child pi runs with an isolated PI_CODING_AGENT_DIR (auth, models and default model of the
@@ -21,21 +21,22 @@
  *   (`--no-skills`). Graders marked `arm: with-only`, and `tool_used: Skill` without `arm`, only
  *   score the with_skill arm when other graders exist.
  * - pi tools stand in for Claude's: Read→read, Write→write, Edit→edit, Bash→bash, Grep→grep, Glob→find,
- *   LS→ls. The trace reports them under the Claude names, and a read of a SKILL.md also counts as a
- *   `Skill` call. Bash, Write and Edit need --allow-tools as well as `allowed_tools`.
+ *   LS→ls. The trace reports them under the Claude names, and a successful read of the tested SKILL.md
+ *   also counts as a `Skill` call. Bash, Write and Edit need --allow-tools as well as `allowed_tools`.
  * - regex, file_exists, tool_used and tool_order grade in code; llm and baseline take three pi judge votes.
- * - `max_turns` and `timeout_seconds` kill the child. Results use the pi-skill-creator workspace layout
+ * - `max_turns` and `timeout_seconds` kill the child. A run that fails to start, ends on a model error,
+ *   or whose scaffold fails, scores 0 without grading. An image focus file goes to the judge as an image. Results use the pi-skill-creator workspace layout
  *   (`<case>/<arm>/run-N/{outputs/, grading.json, timing.json, transcript.jsonl}`), then
  *   aggregate_benchmark.py, an analyzer.md pass and `generate_review.py --static` produce
  *   benchmark.json/md and review.html. The full result goes to aggregate-result.json.
  *
  * Exit code 1 when a case fails to load or a with_skill score is below --threshold.
- * Not supported: MCP mocks, history_file, add_dirs, publishing reports.
+ * Not supported: MCP mocks, history_file, add_dirs, publishing reports, scoped tool rules (`Bash(git:*)`).
  */
 
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -77,6 +78,8 @@ interface Ctx {
 const CREATOR = resolve(dirname(fileURLToPath(import.meta.url)), "../../skills/pi-skill-creator");
 const ARMS: Arm[] = ["with_skill", "without_skill"];
 const RESERVED = new Set(["results", "mocks", "node_modules", "files"]);
+/** Folder names the pi-skill-creator report scripts read as workspace layout. */
+const LAYOUT = new Set(["runs", "outputs", "skill", "inputs"]);
 const TOP = new Set(["schema_version", "name", "description", "tags", "plugins", "runs", "expected_outcome"]);
 const EXEC = new Set(["model", "max_turns", "timeout_seconds", "allowed_tools", "disallowed_tools", "artifact_publish", "growthbook_overrides", "append_system_prompt", "env"]);
 const TYPES = new Set(["regex", "tool_order", "tool_used", "file_exists", "llm", "baseline"]);
@@ -86,6 +89,8 @@ const CLAUDE_TOOL = Object.fromEntries(Object.entries(PI_TOOL).filter(([k]) => k
 const GATED = new Set(["Bash", "Write", "Edit", "WebFetch"]);
 const DEFAULT_TOOLS = ["Read", "Glob", "Grep", "Skill"];
 const JUDGE = "You are a strict, terse evaluation judge for coding-agent traces.";
+/** Focus files the judge gets as an image rather than text. */
+const IMAGE = /\.(png|jpe?g|gif|webp)$/i;
 const VERDICT = "Respond with exactly one word: PASS or FAIL.";
 
 const USAGE = `usage: claude-plugin-eval [run|trigger <eval-set.json>|optimize <eval-set.json>] [skill-dir]
@@ -98,6 +103,9 @@ const opt = (flag: string, v?: string) => (v ? [flag, v] : []);
 const list = (v?: string[]) => (v ?? []).flatMap((s) => s.split(",")).map((s) => s.trim()).filter(Boolean);
 const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
 const mean = (xs: number[]) => (xs.length ? sum(xs) / xs.length : 0);
+const count = (v: unknown) => Number.isInteger(Number(v)) && Number(v) >= 1;
+/** A Claude tool rule with an argument scope, such as `Bash(git:*)`: pi can't enforce the scope. */
+const scoped = (rules: string[]) => rules.find((t) => t.includes("("));
 const toolName = (t: string) => CLAUDE_TOOL[t] ?? t.replace(/\(.*\)$/, "").trim();
 
 /** Claude's glob: `**\/` any dirs, `**` anything, `*` within a segment, `?` one char. */
@@ -195,11 +203,16 @@ async function loadCase(dir: string): Promise<Case | null> {
 
   if (!ex.prompt) throw new Error("no prompt (prompt.md body or execution.prompt)");
   if (!graders.length) throw new Error("no graders");
+  const [runs, maxTurns, timeout] = [c.runs ?? 3, ex.max_turns ?? 10, ex.timeout_seconds ?? 300];
+  for (const [k, v] of Object.entries({ runs, max_turns: maxTurns, timeout_seconds: timeout })) {
+    if (!count(v)) throw new Error(`${k} must be a whole number above 0`);
+  }
+  const rule = scoped(ex.allowed_tools ?? []);
+  if (rule) throw new Error(`allowed_tools: scoped rule ${rule} is not supported under pi`);
   const names = new Set<string>();
   const ref = (r: string | ToolRef): ToolRef => (typeof r === "string" ? { tool: toolName(r) } : { ...r, tool: toolName(r.tool) });
   return {
-    name: c.name ?? basename(dir), dir, tags: c.tags ?? [], runs: c.runs ?? 3, prompt: ex.prompt,
-    maxTurns: ex.max_turns ?? 10, timeout: ex.timeout_seconds ?? 300, model: ex.model,
+    name: c.name ?? basename(dir), dir, tags: c.tags ?? [], runs, prompt: ex.prompt, maxTurns, timeout, model: ex.model,
     tools: ex.allowed_tools?.length ? ex.allowed_tools : DEFAULT_TOOLS, disallowed: ex.disallowed_tools ?? [],
     append: ex.append_system_prompt, env: ex.env ?? {}, scaffold: c.context?.scaffold_script,
     graders: graders.map((g) => {
@@ -222,6 +235,7 @@ async function loadCases(skill: string, glob?: string, tags: string[] = []): Pro
   for (const d of dirs.sort((a, b) => a.name.localeCompare(b.name))) {
     try {
       const c = await loadCase(join(root, d.name));
+      if (c && LAYOUT.has(d.name)) throw new Error("folder name is reserved by the report layout");
       if (c && (!glob || globRe(glob).test(c.name)) && (!tags.length || c.tags.some((t) => tags.includes(t)))) cases.push(c);
     } catch (e) {
       errors.push(`${d.name}: ${(e as Error).message}`);
@@ -267,7 +281,9 @@ async function execute(c: Case, arm: Arm, ctx: Ctx, events: Json[]): Promise<Run
     ...opt("--model", ctx.model ?? c.model), ...opt("--append-system-prompt", c.append),
   ];
   const byId = new Map<string, Call>();
+  const skillMd = new Set([join(ctx.skill, "SKILL.md"), await realpath(join(ctx.skill, "SKILL.md"))]);
   let turns = 0;
+  let apiError: string | undefined;
   const t0 = Date.now();
 
   const r = await exec("pi", args, {
@@ -281,45 +297,56 @@ async function execute(c: Case, arm: Arm, ctx: Ctx, events: Json[]): Promise<Run
         kill();
       } else if (e.type === "tool_execution_start") {
         const call: Call = { name: toolName(e.toolName), input: e.args, inputText: j(e.args) };
-        const path = String(e.toolName === "read" ? e.args?.path ?? "" : "");
-        if (basename(path) === "SKILL.md") {
-          const skill = { skill: basename(dirname(resolve(sandbox, path))) };
-          run.calls.push({ name: "Skill", input: skill, inputText: j(skill) });
-        }
         run.calls.push(call);
         byId.set(e.toolCallId, call);
       } else if (e.type === "tool_execution_end") {
         const call = byId.get(e.toolCallId);
         if (call) call.isError = e.isError;
+        // A successful read of the tested SKILL.md stands in for Claude's Skill call, placed just before the read.
+        const path = String((call?.input as Json)?.path).replace(/^@/, "").replace(/^~(?=\/|$)/, homedir()); // as pi's read takes it
+        if (call?.name === "Read" && !e.isError && skillMd.has(resolve(sandbox, path))) {
+          const skill = { skill: ctx.name };
+          run.calls.splice(run.calls.indexOf(call), 0, { name: "Skill", input: skill, inputText: j(skill) });
+        }
         run.trace.push({ tool: call?.name ?? e.toolName, input: call?.input, output: textOf(e.result?.content), ...(e.isError && { isError: true }) });
       } else if (e.type === "message_end" && e.message?.role === "assistant") {
         const m = e.message;
         run.tokens += m.usage?.totalTokens ?? 0;
         run.cost += m.usage?.cost?.total ?? 0;
-        const text = textOf(m.content);
+        // A failed reply stays in transcript.jsonl but is not graded.
+        const text = m.stopReason === "error" ? "" : textOf(m.content);
         if (text) {
           run.trace.push({ role: "assistant", text });
           run.last = text;
         }
-        if (m.stopReason === "error") run.error = m.errorMessage ?? "model error";
+        // pi retries model errors, so only the last assistant message counts.
+        apiError = m.stopReason === "error" ? m.errorMessage ?? "model error" : undefined;
       }
     },
   });
   run.ms = Date.now() - t0;
+  // Like `claude plugin eval`, a run that fails to start or ends on a model error scores 0 ungraded.
+  run.ungraded = apiError !== undefined || !turns;
+  run.error ??= apiError;
   if (!run.error && r.sig) run.error = ctx.signal?.aborted ? "aborted" : `timed out after ${c.timeout}s`;
   if (!run.error && r.code) run.error = r.err.trim().split("\n").pop() || `pi exited ${r.code}`;
+  if (!turns) run.error ??= "pi never started a turn";
   const after = await snapshot(sandbox);
   run.diff = [...after.keys()].filter((k) => after.get(k) !== before.get(k));
   return run;
 }
 
+/** A regular file at `rel` under `root`, links followed; refuses one that leaves `root`. */
+async function confined(root: string, rel: string, what: string): Promise<string> {
+  const p = await realpath(resolve(root, rel)).catch(() => { throw new Error(`${what} ${rel} does not exist`); });
+  if (!p.startsWith(await realpath(root) + sep)) throw new Error(`${what} ${rel} leaves its directory`);
+  if (!(await stat(p)).isFile()) throw new Error(`${what} ${rel} is not a file`);
+  return p;
+}
+
 /** Text a regex or llm grader looks at. */
 async function source(f: Focus, run: Run): Promise<string> {
-  if (typeof f === "object") {
-    const p = resolve(run.sandbox, f.path);
-    if (!p.startsWith(run.sandbox + sep)) throw new Error(`focus file ${f.path} leaves the run directory`);
-    return readFile(p, "utf8").catch(() => { throw new Error(`focus file ${f.path} does not exist`); });
-  }
+  if (typeof f === "object") return readFile(await confined(run.sandbox, f.path, "focus file"), "utf8");
   if (f === "last_message") return run.last;
   if (f === "files") return run.diff.join("\n");
   if (f === "trace") return run.trace.map(j).join("\n");
@@ -332,10 +359,12 @@ const clip = (s: string, head = 80000, tail = 20000) => (s.length <= head + tail
 const matches = (call: Call, r: ToolRef) => call.name === r.tool && (!r.input_match || new RegExp(r.input_match).test(call.inputText));
 
 /** Three judge votes through pi; passes on a majority. */
-async function judge(prompt: string, ctx: Ctx): Promise<{ passed: boolean; explanation: string }> {
+async function judge(prompt: string, ctx: Ctx, image?: string): Promise<{ passed: boolean; explanation: string }> {
   const args = ["-p", "--no-session", "--no-tools", "--no-skills", "--no-extensions", "--no-context-files", "--system-prompt", JUDGE, ...opt("--model", ctx.judgeModel)];
+  // An image goes in as an @file attachment, which takes the prompt as an argument instead of stdin.
+  const io = image ? { argv: [...args, `@${image}`, prompt], input: "" } : { argv: args, input: prompt };
   const votes = await Promise.all([0, 1, 2].map(async () => {
-    const r = await exec("pi", args, { cwd: tmpdir(), env: env(ctx), input: prompt, signal: ctx.signal });
+    const r = await exec("pi", io.argv, { cwd: tmpdir(), env: env(ctx), input: io.input, signal: ctx.signal });
     if (r.code) throw new Error(`judge call failed: ${r.err.trim()}`);
     return /\bPASS\b/i.test(r.out) && !/\bFAIL\b/i.test(r.out);
   }));
@@ -371,13 +400,14 @@ async function grade(g: Grader, run: Run, c: Case, ctx: Ctx): Promise<{ passed: 
         : fail(`${g.path} ${found ? "exists" : "missing"} (expected ${g.exists ? "present" : "absent"})`);
     }
     case "llm": {
-      const text = g.focus === "trace" ? elide(run.trace) : clip(await source(g.focus!, run));
-      const shown = !text && g.focus === "files" ? "(no file changes)" : text;
-      return judge(`You are grading the output of a coding agent against a criterion.\n\nCriterion:\n${g.criteria}\n\n\nAgent output (${label(g.focus!)}):\n${shown}\n\n\n${VERDICT}`, ctx);
+      const f = g.focus!;
+      const image = typeof f === "object" && IMAGE.test(f.path) ? await confined(run.sandbox, f.path, "focus file") : undefined;
+      const text = image ? "(the attached image)" : f === "trace" ? elide(run.trace) : clip(await source(f, run));
+      const shown = !text && f === "files" ? "(no file changes)" : text;
+      return judge(`You are grading the output of a coding agent against a criterion.\n\nCriterion:\n${g.criteria}\n\n\nAgent output (${label(f)}):\n${shown}\n\n\n${VERDICT}`, ctx, image);
     }
     default: {
-      const raw = await readFile(resolve(c.dir, g.baseline_file!), "utf8").catch(() => null);
-      if (raw === null) return fail(`baseline file ${g.baseline_file} does not exist`);
+      const raw = await readFile(await confined(c.dir, g.baseline_file!, "baseline file"), "utf8");
       const base = raw.split("\n").filter((l) => l.trim()).map((l) => JSON.parse(l));
       return judge([
         "You are comparing a NEW coding-agent trajectory against a BASELINE.", `Criterion:\n${g.criteria}`,
@@ -408,7 +438,7 @@ const score = (vs: Verdict[]) => {
 
 /** Run, grade and record one (case, arm, run) in the workspace layout. */
 async function runOne(c: Case, arm: Arm, i: number, ctx: Ctx): Promise<Json> {
-  const dir = join(ctx.out, c.name, arm, `run-${i}`);
+  const dir = join(ctx.out, basename(c.dir), arm, `run-${i}`);
   const outputs = join(dir, "outputs");
   await mkdir(outputs, { recursive: true });
   const events: Json[] = [];
@@ -430,7 +460,10 @@ async function runOne(c: Case, arm: Arm, i: number, ctx: Ctx): Promise<Json> {
     writeFile(join(dir, "transcript.jsonl"), events.map(j).join("\n")),
     writeFile(join(dir, "timing.json"), j({ total_tokens: run.tokens, duration_ms: run.ms, total_duration_seconds: secs })),
     writeFile(join(dir, "grading.json"), JSON.stringify({
-      expectations: verdicts.map((v) => ({ text: v.scored ? v.text : `(not scored) ${v.text}`, passed: v.passed, evidence: v.explanation })),
+      expectations: [
+        ...verdicts.map((v) => ({ text: v.scored ? v.text : `(not scored) ${v.text}`, passed: v.passed, evidence: v.explanation })),
+        ...(run.ungraded ? [{ text: "(not scored) run was not graded", passed: false, evidence: run.error }] : []),
+      ],
       summary: { passed: scored.filter((v) => v.passed).length, failed: scored.filter((v) => !v.passed).length, total: scored.length, pass_rate: s },
       execution_metrics: { tool_calls: counts, total_tool_calls: run.calls.length, errors_encountered: run.calls.filter((x) => x.isError).length },
       timing: { total_duration_seconds: secs },
@@ -464,6 +497,11 @@ async function analyze(ctx: Ctx, bench: string): Promise<void> {
 }
 
 async function evaluate(ctx: Ctx, o: Json): Promise<number> {
+  // The viewer and aggregate_benchmark.py read the whole directory, so stale runs would leak in.
+  if ((await readdir(ctx.out).catch(() => [])).length) {
+    ctx.io.out(`output dir ${ctx.out} is not empty`);
+    return 1;
+  }
   const { cases, errors } = await loadCases(ctx.skill, o.case, list(o.tag));
   for (const e of errors) ctx.io.log(`case failed to load: ${e}`);
   if (!cases.length) {
@@ -473,11 +511,13 @@ async function evaluate(ctx: Ctx, o: Json): Promise<number> {
   const results = new Map<Case, Json[]>(cases.map((c) => [c, []]));
   const jobs = cases.flatMap((c) => ARMS.flatMap((arm) => Array.from({ length: Number(o.runs ?? c.runs) }, (_, i) => ({ c, arm, i: i + 1 }))));
   for (const c of cases) {
-    await mkdir(join(ctx.out, c.name), { recursive: true });
-    await writeFile(join(ctx.out, c.name, "eval_metadata.json"), j({ eval_name: c.name, prompt: c.prompt, assertions: c.graders.map(assertion) }));
+    // Paths use the folder name: unique and safe, unlike case.yaml's `name`.
+    const dir = join(ctx.out, basename(c.dir));
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "eval_metadata.json"), j({ eval_name: c.name, prompt: c.prompt, assertions: c.graders.map(assertion) }));
   }
   ctx.io.log(`${jobs.length} runs → ${ctx.out}`);
-  await pool(jobs, Math.min(8, Math.max(1, Number(o.concurrency ?? 1))), async ({ c, arm, i }) => {
+  await pool(jobs, Math.min(8, Number(o.concurrency ?? 1)), async ({ c, arm, i }) => {
     results.get(c)!.push(await runOne(c, arm, i, ctx));
   });
 
@@ -551,6 +591,15 @@ export async function run(argv: string[], io: Io = cli, cwd = process.cwd(), sig
   if (o.help) {
     io.out(USAGE);
     return 0;
+  }
+  const rule = scoped(list(o["allow-tools"]));
+  const bad = (o.runs !== undefined && !count(o.runs) && "--runs must be a whole number above 0")
+    || (o.concurrency !== undefined && !count(o.concurrency) && "-j/--concurrency must be a whole number above 0")
+    || (o.threshold !== undefined && !(Number(o.threshold) >= 0 && Number(o.threshold) <= 1) && "--threshold must be between 0 and 1")
+    || (rule && `--allow-tools: scoped rule ${rule} is not supported under pi`);
+  if (bad) {
+    io.out(`${bad}\n${USAGE}`);
+    return 1;
   }
   const skill = resolve(cwd, pos[0] ?? ".");
   const md = await readFile(join(skill, "SKILL.md"), "utf8").catch(() => null);

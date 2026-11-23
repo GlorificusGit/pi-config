@@ -29,7 +29,7 @@ def run_single_query(
     """Run a single query and return whether the skill was triggered.
 
     Writes a stub skill with the description under test to a temp directory,
-    then runs `pi -p --mode json` there with only that skill loaded. The first
+    then runs `pi -p --mode json` there with only that skill and read-only tools. The first
     tool call decides: a read of the stub's SKILL.md means triggered, anything
     else (or no tool call before the timeout) means not. pi exiting before
     the agent ends raises. Reading the JSONL stream lets us stop
@@ -52,7 +52,8 @@ def run_single_query(
         cwd = Path(tmp) / "cwd"
         cwd.mkdir()
 
-        cmd = ["pi", "-p", "--mode", "json", "--no-session", "--no-skills", "--skill", str(skill_md)]
+        # Read-only tools and no MCP: pi has no permission prompts, and a tool may already run before we kill pi
+        cmd = ["pi", "-p", "--mode", "json", "--no-session", "--no-skills", "--skill", str(skill_md), "--tools", "read,grep,find,ls", "--no-mcp"]
         if model:
             cmd.extend(["--model", model])
 
@@ -97,7 +98,7 @@ def run_single_query(
                         return event.get("toolName") == "read" and (
                             path == str(skill_md) or path.endswith(f"{skill_name}/SKILL.md")
                         )
-                    if event.get("type") == "agent_end":
+                    if event.get("type") == "agent_end" and not event.get("willRetry"):
                         return False
 
                 if exited:

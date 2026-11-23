@@ -1,0 +1,63 @@
+{
+  "tools": [
+    {
+      "name": "deepseek_search",
+      "label": "DeepSeek Search",
+      "description": "Search the web for current information. Returns ranked results with titles, URLs and snippets. Use deepseek_fetch to read one result in full.",
+      "env": ["DEEPSEEK_API_KEY"],
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string", "description": "Search query, short and specific" },
+          "count": { "type": "integer", "description": "Number of results, 1-20" }
+        },
+        "required": ["query"]
+      },
+      "request": {
+        "method": "POST",
+        "url": "https://api.deepseek.com/v1/tools/search",
+        "headers": { "Authorization": "Bearer ${DEEPSEEK_API_KEY}" }
+      },
+      "maxChars": 12000,
+      "timeoutMs": 30000
+    },
+    {
+      "name": "deepseek_fetch",
+      "label": "DeepSeek Fetch",
+      "description": "Fetch one web page by URL and return its content as Markdown.",
+      "env": ["DEEPSEEK_API_KEY"],
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "url": { "type": "string", "description": "Full http(s) URL to read" }
+        },
+        "required": ["url"]
+      },
+      "request": {
+        "method": "POST",
+        "url": "https://api.deepseek.com/v1/tools/fetch",
+        "headers": { "Authorization": "Bearer ${DEEPSEEK_API_KEY}" }
+      },
+      "maxChars": 20000
+    },
+    {
+      "name": "current_weather",
+      "label": "Current weather",
+      "description": "Current temperature (°C) and wind speed (km/h) at a latitude and longitude. No API key needed.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "latitude": { "type": "number", "description": "Latitude in decimal degrees" },
+          "longitude": { "type": "number", "description": "Longitude in decimal degrees" }
+        },
+        "required": ["latitude", "longitude"]
+      },
+      "request": {
+        "method": "GET",
+        "url": "https://api.open-meteo.com/v1/forecast",
+        "fixed": { "current": "temperature_2m,wind_speed_10m" }
+      },
+      "maxChars": 4000
+    }
+  ]
+}

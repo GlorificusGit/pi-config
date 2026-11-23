@@ -9,7 +9,7 @@ dst=~/.pi/test
 
 mkdir -p "$dst"
 
-for f in auth.json models.json keybindings.json AGENTS.md; do
+for f in auth.json models.json keybindings.json AGENTS.md tools.json; do
   [[ -e "$src/$f" ]] && ln -sfn "$src/$f" "$dst/$f"
 done
 

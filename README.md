@@ -5,6 +5,7 @@ Personal Pi extensions.
 ## extensions
 - `extensions/claude-plugin-eval/`: mimic Claude skill evals against pi, as `/claude-plugin-eval` or `bun extensions/claude-plugin-eval/runner.ts`
 - `extensions/simple-pi-tools/`: one-request HTTPS tools from its `builtin-tools.json`, plus `~/.pi/agent/tools.json` (same name overrides). Inactive until opted in via `defaultTools`, e.g. `["+deepseek_search"]`
+- `extensions/tools.ts`: `/tools` lists active and inactive tools by source
 - `skills/pi-skill-creator/`: Claude's skill-creator, driven through `claude-plugin-eval`
 
 ## Install

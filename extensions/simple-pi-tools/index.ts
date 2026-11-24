@@ -8,6 +8,9 @@
 // Each tool makes exactly ONE HTTPS request and returns the response text.
 // Anything needing more logic belongs in its own extension.
 //
+// Tools register inactive. Opt in with the defaultTools setting, e.g. "defaultTools": ["+deepseek_search"],
+// or for one run with --tools +deepseek_search.
+//
 // Edit tools.json, then run /reload in pi.
 import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -380,6 +383,7 @@ export default function (pi: ExtensionAPI) {
       name: spec.name,
       label: spec.label,
       description: spec.description,
+      defaultActive: false,
       parameters: Type.Unsafe<Record<string, Scalar>>(toJsonSchema(spec)),
       async execute(_toolCallId, params, signal) {
         return runTool(spec, params, signal);
